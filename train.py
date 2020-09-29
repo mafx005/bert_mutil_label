@@ -4,13 +4,14 @@
 # @FileName: train.py
 # @Email : mafx5218@126.com
 # @Dec : 
-import os
-os.environ["CUDA_VISIBLE_DEVICES"]="-1"
+
 
 import os
 import collections
 import pandas as pd
+import numpy as np
 import tensorflow as tf
+from datetime import datetime
 import tensorflow_hub as hub
 import datetime as datatime
 import bert
@@ -19,16 +20,29 @@ from bert import optimization
 from bert import tokenization
 from bert import modeling
 
+flags = tf.flags
+FLAGS = flags.FLAGS
 
-
-MAX_SEQ_LENGTH = 128
-BATCH_SIZE = 32
-LEARNING_RATE = 2e-5
-NUM_TRAIN_EPOCHS = 1.0
+# flags.DEFINE_bool("do_train", False, "Whether to run training.")
+# flags.DEFINE_bool("do_eval", False, "Whether to run eval on the dev set.")
+# flags.DEFINE_bool("do_predict", False, "Whether to run the model in inference mode on the test set.")
 
 bert_vocab = 'bert_model/vocab.txt'
 bert_ckpt = 'bert_model/bert_model.ckpt'
 bert_config = 'bert_model/bert_config.json'
+OUTPUT_DIR = "output/output"
+
+# We'll set sequences to be at most 128 tokens long.
+MAX_SEQ_LENGTH = 128
+BATCH_SIZE = 64
+LEARNING_RATE = 2e-5
+NUM_TRAIN_EPOCHS = 10.0
+# Warmup is a period of time where hte learning rate
+# is small and gradually increases--usually helps training.
+WARMUP_PROPORTION = 0.1
+# Model configs
+SAVE_CHECKPOINTS_STEPS = 1000
+SAVE_SUMMARY_STEPS = 500
 
 tokenization.validate_case_matches_checkpoint(True, bert_ckpt)
 tokenizer = tokenization.FullTokenizer(vocab_file=bert_vocab, do_lower_case=True)
@@ -64,7 +78,6 @@ class InputExample(object):
         self.text_b = text_b
         self.labels = labels
 
-
 class InputFeatures(object):
     """A single set of features of data."""
 
@@ -74,7 +87,6 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
         self.label_ids = label_ids,
         self.is_real_example=is_real_example
-
 
 def create_examples(df, labels_available=True):
     """Creates examples for the training and dev sets."""
@@ -100,7 +112,6 @@ SIZE_TRAIN = int(TRAIN_VAL_RATIO*LEN)
 x_train = train[:SIZE_TRAIN]
 x_val = train[SIZE_TRAIN:]
 
-train_examples = create_examples(x_train)
 def convert_examples_to_features(examples,  max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
 
@@ -180,15 +191,6 @@ def convert_examples_to_features(examples,  max_seq_length, tokenizer):
                           segment_ids=segment_ids,
                           label_ids=labels_ids))
     return features
-
-
-
-# Warmup is a period of time where hte learning rate
-# is small and gradually increases--usually helps training.
-WARMUP_PROPORTION = 0.1
-# Model configs
-SAVE_CHECKPOINTS_STEPS = 1000
-SAVE_SUMMARY_STEPS = 500
 
 
 class PaddingInputExample(object):
@@ -388,26 +390,6 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
         else:
             tokens_b.pop()
 
-num_train_steps = int(len(train_examples) / BATCH_SIZE * NUM_TRAIN_EPOCHS)
-num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
-
-train_file = os.path.join('./working', "train.tf_record")
-#filename = Path(train_file)
-if not os.path.exists(train_file):
-    open(train_file, 'w').close()
-file_based_convert_examples_to_features(
-            train_examples, MAX_SEQ_LENGTH, tokenizer, train_file)
-tf.logging.info("***** Running training *****")
-tf.logging.info("  Num examples = %d", len(train_examples))
-tf.logging.info("  Batch size = %d", BATCH_SIZE)
-tf.logging.info("  Num steps = %d", num_train_steps)
-
-train_input_fn = file_based_input_fn_builder(
-    input_file=train_file,
-    seq_length=MAX_SEQ_LENGTH,
-    is_training=True,
-    drop_remainder=True)
-
 def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
                  labels, num_labels, use_one_hot_embeddings):
     """Creates a classification model."""
@@ -564,75 +546,6 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     return model_fn
 
-OUTPUT_DIR = "./working/output"
-# Specify outpit directory and number of checkpoint steps to save
-run_config = tf.estimator.RunConfig(
-    model_dir=OUTPUT_DIR,
-    save_summary_steps=SAVE_SUMMARY_STEPS,
-    keep_checkpoint_max=1,
-    save_checkpoints_steps=SAVE_CHECKPOINTS_STEPS
-)
-
-
-bert_config = modeling.BertConfig.from_json_file(bert_config)
-model_fn = model_fn_builder(
-    bert_config=bert_config,
-    num_labels= len(LABEL_COLUMNS),
-    init_checkpoint=bert_ckpt,
-    learning_rate=LEARNING_RATE,
-    num_train_steps=num_train_steps,
-    num_warmup_steps=num_warmup_steps,
-    use_tpu=False,
-    use_one_hot_embeddings=False)
-
-estimator = tf.estimator.Estimator(
-    model_fn=model_fn,
-    config=run_config,
-    params={"batch_size": BATCH_SIZE})
-
-from datetime import datetime
-print(f'Beginning Training!')
-current_time = datetime.now()
-estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
-print("Training took time ", datetime.now() - current_time)
-
-eval_file = os.path.join('./working', "eval.tf_record")
-#filename = Path(train_file)
-if not os.path.exists(eval_file):
-    open(eval_file, 'w').close()
-
-eval_examples = create_examples(x_val)
-file_based_convert_examples_to_features(
-    eval_examples, MAX_SEQ_LENGTH, tokenizer, eval_file)
-
-
-eval_steps = None
-
-eval_drop_remainder = False
-eval_input_fn = file_based_input_fn_builder(
-    input_file=eval_file,
-    seq_length=MAX_SEQ_LENGTH,
-    is_training=False,
-    drop_remainder=False)
-
-result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
-
-
-output_eval_file = os.path.join("./working", "eval_results.txt")
-with tf.gfile.GFile(output_eval_file, "w") as writer:
-    tf.logging.info("***** Eval results *****")
-    for key in sorted(result.keys()):
-        tf.logging.info("  %s = %s", key, str(result[key]))
-        writer.write("%s = %s\n" % (key, str(result[key])))
-
-x_test = test[:] #testing a small sample
-print(len(x_test))
-x_test = x_test.reset_index(drop=True)
-print(len(x_test))
-predict_examples = create_examples(x_test,False)
-
-test_features = convert_examples_to_features(predict_examples, MAX_SEQ_LENGTH, tokenizer)
-
 def input_fn_builder(features, seq_length, is_training, drop_remainder):
 
     all_input_ids = []
@@ -682,14 +595,81 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
 
     return input_fn
 
-print('Beginning Predictions!')
-current_time = datetime.now()
+run_config = tf.estimator.RunConfig(
+    model_dir=OUTPUT_DIR,
+    save_summary_steps=SAVE_SUMMARY_STEPS,
+    keep_checkpoint_max=1,
+    save_checkpoints_steps=SAVE_CHECKPOINTS_STEPS
+)
+bert_config = modeling.BertConfig.from_json_file(bert_config)
 
-predict_input_fn = input_fn_builder(features=test_features, seq_length=MAX_SEQ_LENGTH, is_training=False, drop_remainder=False)
-predictions = estimator.predict(predict_input_fn)
-print("Prediction took time ", datetime.now() - current_time)
+num_train_steps = None
+num_warmup_steps = None
 
-import numpy as np
+if FLAGS.do_train:
+    train_examples = create_examples(x_train)
+    num_train_steps = int(len(train_examples) / BATCH_SIZE * NUM_TRAIN_EPOCHS)
+    num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
+
+model_fn = model_fn_builder(
+    bert_config=bert_config,
+    num_labels=len(LABEL_COLUMNS),
+    init_checkpoint=bert_ckpt,
+    learning_rate=LEARNING_RATE,
+    num_train_steps=num_train_steps,
+    num_warmup_steps=num_warmup_steps,
+    use_tpu=False,
+    use_one_hot_embeddings=False)
+
+estimator = tf.estimator.Estimator(
+    model_fn=model_fn,
+    config=run_config,
+    params={"batch_size": BATCH_SIZE})
+
+if FLAGS.do_train:
+    train_file = os.path.join('./working', "train.tf_record")
+    #filename = Path(train_file)
+    if not os.path.exists(train_file):
+        open(train_file, 'w').close()
+    file_based_convert_examples_to_features(
+                train_examples, MAX_SEQ_LENGTH, tokenizer, train_file)
+    tf.logging.info("***** Running training *****")
+    tf.logging.info("  Num examples = %d", len(train_examples))
+    tf.logging.info("  Batch size = %d", BATCH_SIZE)
+    tf.logging.info("  Num steps = %d", num_train_steps)
+    train_input_fn = file_based_input_fn_builder(
+        input_file=train_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=True,
+        drop_remainder=True)
+    print(f'Beginning Training!')
+    current_time = datetime.now()
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+    print("Training took time ", datetime.now() - current_time)
+
+if FLAGS.do_eval:
+    eval_examples = create_examples(x_val)
+    eval_file = os.path.join('./working', "eval.tf_record")
+    #filename = Path(train_file)
+    if not os.path.exists(eval_file):
+        open(eval_file, 'w').close()
+    file_based_convert_examples_to_features(
+        eval_examples, MAX_SEQ_LENGTH, tokenizer, eval_file)
+    eval_steps = None
+    eval_drop_remainder = False
+    eval_input_fn = file_based_input_fn_builder(
+        input_file=eval_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=False,
+        drop_remainder=False)
+    result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
+    output_eval_file = os.path.join("./output", "eval_results.txt")
+    with tf.gfile.GFile(output_eval_file, "w") as writer:
+        tf.logging.info("***** Eval results *****")
+        for key in sorted(result.keys()):
+            tf.logging.info("  %s = %s", key, str(result[key]))
+            writer.write("%s = %s\n" % (key, str(result[key])))
+
 def predict2both(predictions):
     one_hots = []
     for prediction in predictions:
@@ -704,13 +684,25 @@ def create_output(predictions):
     for (i, prediction) in enumerate(predictions):
         preds = prediction["probabilities"]
         probabilities.append(preds)
+    print(probabilities)
     y3 = predict2both(probabilities)
     dff = pd.DataFrame(y3)
     dff.columns = LABEL_COLUMNS
-
     return dff
 
-output_df = create_output(predictions)
-merged_df = pd.concat([x_test, output_df], axis=1)
-submission = merged_df.drop(['Question Sentence'], axis=1)
-submission.to_csv("sample_submission0.csv", index=False)
+if FLAGS.do_predict:
+    x_test = test[:10] #testing a small sample
+    print(len(x_test))
+    x_test = x_test.reset_index(drop=True)
+    print(len(x_test))
+    predict_examples = create_examples(x_test,False)
+    test_features = convert_examples_to_features(predict_examples, MAX_SEQ_LENGTH, tokenizer)
+    print('Beginning Predictions!')
+    current_time = datetime.now()
+    predict_input_fn = input_fn_builder(features=test_features, seq_length=MAX_SEQ_LENGTH, is_training=False, drop_remainder=False)
+    predictions = estimator.predict(predict_input_fn)
+    print("Prediction took time ", datetime.now() - current_time)
+    output_df = create_output(predictions)
+    merged_df = pd.concat([x_test, output_df], axis=1)
+    submission = merged_df.drop(['Question Sentence'], axis=1)
+    submission.to_csv("sample_submission0.csv", index=False)
