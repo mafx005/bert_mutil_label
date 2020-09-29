@@ -684,7 +684,7 @@ def create_output(predictions):
     for (i, prediction) in enumerate(predictions):
         preds = prediction["probabilities"]
         probabilities.append(preds)
-    print(probabilities)
+    # print(probabilities)
     y3 = predict2both(probabilities)
     dff = pd.DataFrame(y3)
     dff.columns = LABEL_COLUMNS
