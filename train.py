@@ -584,13 +584,10 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
             "label_ids":
                 tf.constant(all_label_ids, shape=[num_examples, len(LABEL_COLUMNS)], dtype=tf.int32),
         })
-
         if is_training:
             d = d.repeat()
             d = d.shuffle(buffer_size=100)
-
         d = d.batch(batch_size=batch_size, drop_remainder=drop_remainder)
-
         return d
 
     return input_fn
